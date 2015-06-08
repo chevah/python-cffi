@@ -1,0 +1,47 @@
+#!/bin/sh
+#
+# Script to build a Python binary wheel package.
+#
+
+BUILD_FOLDER=build
+DIST_FOLDER=dist
+PYTHON_FOLDER=~/.local/python2.7
+PYTHON_BIN=$PYTHON_FOLDER/bin/python
+PIP_BIN=$PYTHON_FOLDER/bin/pip
+
+# Import shared code.
+. ./functions.sh
+
+
+help_text_clean="Clean the folder."
+command_clean() {
+    if [ -e ${BUILD_FOLDER} ]; then
+        echo 'Previous build sub-directory found. Removing...'
+        rm -rf ${BUILD_FOLDER}
+    fi
+
+    if [ -e ${DIST_FOLDER} ]; then
+        echo 'Previous build sub-directory found. Removing...'
+        rm -rf ${DIST_FOLDER}
+    fi
+}
+
+
+help_text_build="Build the binary package."
+command_build() {
+    rm -rf ${DIST_FOLDER}
+    ./paver.sh distributable_python $PYTHON_FOLDER
+    $PIP_BIN install wheel
+    $PYTHON_BIN setup.py bdist_wheel
+    mkdir -p dist/upload/wheels/cffi/
+    mv dist/*.whl dist/upload/wheels/cffi/
+}
+
+
+help_text_test="Test the newly created package."
+command_test() {
+    echo "No TEST yet"
+}
+
+# Launch the whole thing.
+select_command $@
