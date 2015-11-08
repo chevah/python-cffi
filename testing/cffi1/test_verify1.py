@@ -188,6 +188,9 @@ def test_longdouble_precision():
         # Check the particular results on Intel
         import platform
         if (platform.machine().startswith('i386') or
+            platform.machine().startswith('i486') or
+            platform.machine().startswith('i586') or
+            platform.machine().startswith('i686') or
             platform.machine().startswith('x86')):
             assert abs(more_precise - 0.656769) < 0.001
             assert abs(less_precise - 3.99091) < 0.001
@@ -1197,25 +1200,6 @@ def test_function_typedef():
     lib = ffi.verify('#include <math.h>', libraries=lib_m)
     assert lib.sin(1.23) == math.sin(1.23)
 
-def test_callback_calling_convention():
-    py.test.skip("later")
-    if sys.platform != 'win32':
-        py.test.skip("Windows only")
-    ffi = FFI()
-    ffi.cdef("""
-        int call1(int(*__cdecl cb)(int));
-        int call2(int(*__stdcall cb)(int));
-    """)
-    lib = ffi.verify("""
-        int call1(int(*__cdecl cb)(int)) {
-            return cb(42) + 1;
-        }
-        int call2(int(*__stdcall cb)(int)) {
-            return cb(-42) - 6;
-        }
-    """)
-    xxx
-
 def test_opaque_integer_as_function_result():
     #import platform
     #if platform.machine().startswith('sparc'):
@@ -1622,11 +1606,11 @@ def test_FILE_stored_in_stdout():
 
 def test_FILE_stored_explicitly():
     ffi = FFI()
-    ffi.cdef("int myprintf(const char *, int); FILE *myfile;")
+    ffi.cdef("int myprintf11(const char *, int); FILE *myfile;")
     lib = ffi.verify("""
         #include <stdio.h>
         FILE *myfile;
-        int myprintf(const char *out, int value) {
+        int myprintf11(const char *out, int value) {
             return fprintf(myfile, out, value);
         }
     """)
@@ -1636,7 +1620,7 @@ def test_FILE_stored_explicitly():
     lib.myfile = ffi.cast("FILE *", fw1)
     #
     fw1.write(b"X")
-    r = lib.myprintf(b"hello, %d!\n", ffi.cast("int", 42))
+    r = lib.myprintf11(b"hello, %d!\n", ffi.cast("int", 42))
     fw1.close()
     assert r == len("hello, 42!\n")
     #
@@ -1922,7 +1906,7 @@ def test_bug_const_char_ptr_array_1():
     assert repr(ffi.typeof(lib.a)) == "<ctype 'char *[5]'>"
 
 def test_bug_const_char_ptr_array_2():
-    ffi = FFI_warnings_not_error()    # ignore warnings
+    ffi = FFI()
     ffi.cdef("""const int a[];""")
     lib = ffi.verify("""const int a[5];""")
     assert repr(ffi.typeof(lib.a)) == "<ctype 'int *'>"
@@ -2230,3 +2214,39 @@ def test_unsupported_some_primitive_types():
     #
     ffi.cdef("typedef int... foo_t;")
     py.test.raises(VerificationError, ffi.verify, "typedef float foo_t;")
+
+def test_windows_dllimport_data():
+    if sys.platform != 'win32':
+        py.test.skip("Windows only")
+    from testing.udir import udir
+    tmpfile = udir.join('dllimport_data.c')
+    tmpfile.write('int my_value = 42;\n')
+    ffi = FFI()
+    ffi.cdef("int my_value;")
+    lib = ffi.verify("extern __declspec(dllimport) int my_value;",
+                     sources = [str(tmpfile)])
+    assert lib.my_value == 42
+
+def test_macro_var():
+    ffi = FFI()
+    ffi.cdef("int myarray[50], my_value;")
+    lib = ffi.verify("""
+        int myarray[50];
+        int *get_my_value(void) {
+            static int index = 0;
+            return &myarray[index++];
+        }
+        #define my_value (*get_my_value())
+    """)
+    assert lib.my_value == 0             # [0]
+    lib.my_value = 42                    # [1]
+    assert lib.myarray[1] == 42
+    assert lib.my_value == 0             # [2]
+    lib.myarray[3] = 63
+    assert lib.my_value == 63            # [3]
+    p = ffi.addressof(lib, 'my_value')   # [4]
+    assert p[-1] == 63
+    assert p[0] == 0
+    assert p == lib.myarray + 4
+    p[1] = 82
+    assert lib.my_value == 82            # [5]

@@ -166,6 +166,17 @@ static PyObject *build_primitive_type(int num)
                         "size (or not an integer type at all)");
         return NULL;
     }
+    else if (num == _CFFI__UNKNOWN_FLOAT_PRIM) {
+        PyErr_SetString(FFIError, "primitive floating-point type with an "
+                        "unexpected size (or not a float type at all)");
+        return NULL;
+    }
+    else if (num == _CFFI__UNKNOWN_LONG_DOUBLE) {
+        PyErr_SetString(FFIError, "primitive floating-point type is "
+                        "'long double', not supported for now with "
+                        "the syntax 'typedef double... xxx;'");
+        return NULL;
+    }
     else {
         PyErr_Format(PyExc_NotImplementedError, "prim=%d", num);
         return NULL;
@@ -533,7 +544,7 @@ realize_c_type_or_func(builder_c_t *builder,
     case _CFFI_OP_FUNCTION:
     {
         PyObject *fargs;
-        int i, base_index, num_args, ellipsis;
+        int i, base_index, num_args, ellipsis, abi;
 
         y = (PyObject *)realize_c_type(builder, opcodes, _CFFI_GETARG(op));
         if (y == NULL)
@@ -549,7 +560,24 @@ realize_c_type_or_func(builder_c_t *builder,
                    _CFFI_OP_FUNCTION_END)
             num_args++;
 
-        ellipsis = _CFFI_GETARG(opcodes[base_index + num_args]) & 1;
+        ellipsis = _CFFI_GETARG(opcodes[base_index + num_args]) & 0x01;
+        abi      = _CFFI_GETARG(opcodes[base_index + num_args]) & 0xFE;
+        switch (abi) {
+        case 0:
+            abi = FFI_DEFAULT_ABI;
+            break;
+        case 2:
+#if defined(MS_WIN32) && !defined(_WIN64)
+            abi = FFI_STDCALL;
+#else
+            abi = FFI_DEFAULT_ABI;
+#endif
+            break;
+        default:
+            PyErr_Format(FFIError, "abi number %d not supported", abi);
+            Py_DECREF(y);
+            return NULL;
+        }
 
         fargs = PyTuple_New(num_args);
         if (fargs == NULL) {
@@ -567,8 +595,7 @@ realize_c_type_or_func(builder_c_t *builder,
             PyTuple_SET_ITEM(fargs, i, z);
         }
 
-        z = new_function_type(fargs, (CTypeDescrObject *)y, ellipsis,
-                              FFI_DEFAULT_ABI);
+        z = new_function_type(fargs, (CTypeDescrObject *)y, ellipsis, abi);
         Py_DECREF(fargs);
         Py_DECREF(y);
         if (z == NULL)

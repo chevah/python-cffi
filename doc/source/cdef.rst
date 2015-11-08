@@ -2,6 +2,8 @@
 Preparing and Distributing modules
 ======================================
 
+.. contents::
+
 There are three or four different ways to use CFFI in a project.
 In order of complexity:
 
@@ -130,9 +132,9 @@ ffi`` returns an object of a type written in C, which does not let you
 add random attributes to it (nor does it have all the
 underscore-prefixed internal attributes of the Python version).
 Similarly, the ``lib`` objects returned by the C version are read-only,
-apart from writes to global variables.  Also, ``lib.__dict__`` no
-longer works (it now tries to look up a hypothetical symbol
-``__dict__`` from the C library); use instead ``dir(lib)``.
+apart from writes to global variables.  Also, ``lib.__dict__`` does
+not work before version 1.2 or if ``lib`` happens to declare a name
+called ``__dict__`` (use instead ``dir(lib)``).
 
 
 ffi.cdef(): declaring types and functions
@@ -180,8 +182,6 @@ can assume to exist are the standard types:
 
 .. _`common Windows types`: http://msdn.microsoft.com/en-us/library/windows/desktop/aa383751%28v=vs.85%29.aspx
 
-.. "versionadded:: 0.9.3": intmax_t etc.
-
 The declarations can also contain "``...``" at various places; these are
 placeholders that will be completed by the compiler.  More information
 about it below in `Letting the C compiler fill the gaps`_.
@@ -198,17 +198,41 @@ Multiple calls to ``ffi.cdef()`` are possible.  Beware that it can be
 slow to call ``ffi.cdef()`` a lot of times, a consideration that is
 important mainly in in-line mode.
 
-.. versionadded:: 0.8.2
-   The ``ffi.cdef()`` call takes an optional
-   argument ``packed``: if True, then all structs declared within
-   this cdef are "packed".  If you need both packed and non-packed
-   structs, use several cdefs in sequence.)  This
-   has a meaning similar to ``__attribute__((packed))`` in GCC.  It
-   specifies that all structure fields should have an alignment of one
-   byte.  (Note that the packed attribute has no effect on bit fields so
-   far, which mean that they may be packed differently than on GCC.
-   Also, this has no effect on structs declared with ``"...;"``---next
-   section.)
+The ``ffi.cdef()`` call takes an optional
+argument ``packed``: if True, then all structs declared within
+this cdef are "packed".  (If you need both packed and non-packed
+structs, use several cdefs in sequence.)  This
+has a meaning similar to ``__attribute__((packed))`` in GCC.  It
+specifies that all structure fields should have an alignment of one
+byte.  (Note that the packed attribute has no effect on bit fields so
+far, which mean that they may be packed differently than on GCC.
+Also, this has no effect on structs declared with ``"...;"``---more
+about it later in `Letting the C compiler fill the gaps`_.)
+
+Note that you can use the type-qualifiers ``const`` and ``restrict``
+(but not ``__restrict`` or ``__restrict__``) in the ``cdef()``, but
+this has no effect on the cdata objects that you get at run-time (they
+are never ``const``).  The effect is limited to knowing if a global
+variable is meant to be a constant or not.  Also, *new in version
+1.3:* when using ``set_source()`` or ``verify()``, these two
+qualifiers are copied from the cdef to the generated C code; this
+fixes warnings by the C compiler.
+
+Note a trick if you copy-paste code from sources in which there are
+extra macros (for example, the Windows documentation uses SAL
+annotations like ``_In_`` or ``_Out_``).  These hints must be removed
+in the string given to cdef(), but it can be done programmatically
+like this::
+
+    ffi.cdef(re.sub(r"\b(_In_|_Inout_|_Out_|_Outptr_)(opt_)?\b", " ",
+      """
+        DWORD WINAPI GetModuleFileName(
+          _In_opt_ HMODULE hModule,
+          _Out_    LPTSTR  lpFilename,
+          _In_     DWORD   nSize
+        );
+      """))
+
 
 .. _`ffi.set_unicode()`:
 
@@ -233,8 +257,8 @@ strings as arguments instead of not byte strings.  (Before cffi version 0.9,
 ``TCHAR`` and friends where hard-coded as unicode, but ``UNICODE`` was,
 inconsistently, not defined by default.)
 
-.. "versionadded:: 0.9" --- inlined in the previous paragraph
 
+.. _loading-libraries:
 
 ffi.dlopen(): loading libraries in ABI mode
 -------------------------------------------
@@ -244,7 +268,7 @@ returns a module-like library object.  Use this when you are fine with
 the limitations of ABI-level access to the system.  In case of doubt, read
 again `ABI versus API`_ in the overview.
 
-.. _`ABI versus API`: overflow.html#abi-versus-api
+.. _`ABI versus API`: overview.html#abi-versus-api
 
 You can use the library object to call the functions previously
 declared by ``ffi.cdef()``, to read constants, and to read or write
@@ -395,6 +419,16 @@ in the details.  These places are:
    ``(u)int(8,16,32,64)_t`` in Python, but in the generated C code,
    only ``foo_t`` is used.
 
+* *New in version 1.3:* floating-point types: "``typedef
+  float... foo_t;``" (or equivalently "``typedef double... foo_t;``")
+  declares ``foo_t`` as a-float-or-a-double; the compiler will figure
+  out which it is.  Note that if the actual C type is even larger
+  (``long double`` on some platforms), then compilation will fail.
+  The problem is that the Python "float" type cannot be used to store
+  the extra precision.  (Use the non-dot-dot-dot syntax ``typedef long
+  double foo_t;`` as usual, which returns values that are not Python
+  floats at all but cdata "long double" objects.)
+
 *  unknown types: the syntax "``typedef ... foo_t;``" declares the type
    ``foo_t`` as opaque.  Useful mainly for when the API takes and returns
    ``foo_t *`` without you needing to look inside the ``foo_t``.  Also
@@ -414,6 +448,15 @@ in the details.  These places are:
    means that the length is not known even to the C compiler, and thus
    no attempt is made to complete it.  *New in version 1.1:* support
    for multidimensional arrays: "``int n[...][...];``".
+
+   *New in version 1.2:* "``int m[][...];``", i.e. ``...`` can be used
+   in the innermost dimensions without being also used in the outermost
+   dimension.  In the example given, the length of the ``m`` array is
+   assumed not to be known to the C compiler, but the length of every
+   item (like the sub-array ``m[0]``) is always known the C compiler.
+   In other words, only the outermost dimension can be specified as
+   ``[]``, both in C and in CFFI, but any dimension can be given as
+   ``[...]`` in CFFI.
 
 *  enums: if you don't know the exact order (or values) of the declared
    constants, then use this syntax: "``enum foo { A, B, C, ... };``"
@@ -553,12 +596,10 @@ Known missing features that are GCC or MSVC extensions:
   foo_wrapper(struct my_complex c) { foo(c.real + c.imag*1j); }``, and
   call ``foo_wrapper`` rather than ``foo`` directly.
 
-* Thread-local variables (access them via getter/setter functions)
-
 * Function pointers with non-default calling conventions (e.g. on
   Windows, "stdcall").
 
-Note that since version 0.8, declarations like ``int field[];`` in
+Note that declarations like ``int field[];`` in
 structures are interpreted as variable-length structures.  Declarations
 like ``int field[...];`` on the other hand are arrays whose length is
 going to be completed by the compiler.  You can use ``int field[];``
@@ -567,6 +608,11 @@ but in this case, as CFFI
 believes it cannot ask the C compiler for the length of the array, you
 get reduced safety checks: for example, you risk overwriting the
 following fields by passing too many array items in the constructor.
+
+*New in version 1.2:*
+Thread-local variables (``__thread``) can be accessed, as well as
+variables defined as dynamic macros (``#define myvar  (*fetchme())``).
+Before version 1.2, you need to write getter/setter functions.
 
 
 Debugging dlopen'ed C libraries

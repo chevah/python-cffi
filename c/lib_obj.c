@@ -267,7 +267,8 @@ static PyObject *lib_build_and_cache_attr(LibObject *lib, PyObject *name,
             return NULL;
 
         if (ct->ct_size <= 0) {
-            PyErr_SetString(PyExc_SystemError, "constant has no known size");
+            PyErr_Format(FFIError, "constant '%s' is of type '%s', "
+                         "whose size is not known", s, ct->ct_name);
             return NULL;
         }
         if (g->address == NULL) {
@@ -299,7 +300,10 @@ static PyObject *lib_build_and_cache_attr(LibObject *lib, PyObject *name,
 
     case _CFFI_OP_GLOBAL_VAR:
     {
-        /* global variable of the exact type specified here */
+        /* global variable of the exact type specified here
+           (nowadays, only used by the ABI mode or backward
+           compatibility; see _CFFI_OP_GLOBAL_VAR_F for the API mode)
+         */
         Py_ssize_t g_size = (Py_ssize_t)g->size_or_direct_fn;
         ct = realize_c_type(types_builder, types_builder->ctx.types,
                             _CFFI_GETARG(g->type_op));
@@ -320,11 +324,20 @@ static PyObject *lib_build_and_cache_attr(LibObject *lib, PyObject *name,
                 if (address == NULL)
                     return NULL;
             }
-            x = make_global_var(ct, address);
+            x = make_global_var(name, ct, address, NULL);
         }
         Py_DECREF(ct);
         break;
     }
+
+    case _CFFI_OP_GLOBAL_VAR_F:
+        ct = realize_c_type(types_builder, types_builder->ctx.types,
+                            _CFFI_GETARG(g->type_op));
+        if (ct == NULL)
+            return NULL;
+        x = make_global_var(name, ct, NULL, (gs_fetch_addr_fn)g->address);
+        Py_DECREF(ct);
+        break;
 
     case _CFFI_OP_DLOPEN_FUNC:
     {
@@ -378,16 +391,88 @@ static PyObject *lib_build_and_cache_attr(LibObject *lib, PyObject *name,
         }                                               \
     } while (0)
 
+static PyObject *_lib_dir1(LibObject *lib, int ignore_global_vars)
+{
+    const struct _cffi_global_s *g = lib->l_types_builder->ctx.globals;
+    int i, count = 0, total = lib->l_types_builder->ctx.num_globals;
+    PyObject *s, *lst = PyList_New(total);
+    if (lst == NULL)
+        return NULL;
+
+    for (i = 0; i < total; i++) {
+        if (ignore_global_vars) {
+            int op = _CFFI_GETOP(g[i].type_op);
+            if (op == _CFFI_OP_GLOBAL_VAR || op == _CFFI_OP_GLOBAL_VAR_F)
+                continue;
+        }
+        s = PyText_FromString(g[i].name);
+        if (s == NULL)
+            goto error;
+        PyList_SET_ITEM(lst, count, s);
+        count++;
+    }
+    if (PyList_SetSlice(lst, count, total, NULL) < 0)
+        goto error;
+    return lst;
+
+ error:
+    Py_DECREF(lst);
+    return NULL;
+}
+
+static PyObject *_lib_dict(LibObject *lib)
+{
+    const struct _cffi_global_s *g = lib->l_types_builder->ctx.globals;
+    int i, total = lib->l_types_builder->ctx.num_globals;
+    PyObject *name, *x, *d = PyDict_New();
+    if (d == NULL)
+        return NULL;
+
+    for (i = 0; i < total; i++) {
+        name = PyText_FromString(g[i].name);
+        if (name == NULL)
+            goto error;
+
+        LIB_GET_OR_CACHE_ADDR(x, lib, name, goto error);
+
+        if (PyDict_SetItem(d, name, x) < 0)
+            goto error;
+        Py_DECREF(name);
+    }
+    return d;
+
+ error:
+    Py_XDECREF(name);
+    Py_DECREF(d);
+    return NULL;
+}
+
 static PyObject *lib_getattr(LibObject *lib, PyObject *name)
 {
     PyObject *x;
-    LIB_GET_OR_CACHE_ADDR(x, lib, name, return NULL);
+    LIB_GET_OR_CACHE_ADDR(x, lib, name, goto missing);
 
     if (GlobSupport_Check(x)) {
         return read_global_var((GlobSupportObject *)x);
     }
     Py_INCREF(x);
     return x;
+
+ missing:
+    if (strcmp(PyText_AsUTF8(name), "__all__") == 0) {
+        PyErr_Clear();
+        return _lib_dir1(lib, 1);
+    }
+    if (strcmp(PyText_AsUTF8(name), "__dict__") == 0) {
+        PyErr_Clear();
+        return _lib_dict(lib);
+    }
+    /* this hack is for Python 3.5 */
+    if (strcmp(PyText_AsUTF8(name), "__name__") == 0) {
+        PyErr_Clear();
+        return lib_repr(lib);
+    }
+    return NULL;
 }
 
 static int lib_setattr(LibObject *lib, PyObject *name, PyObject *val)
@@ -410,27 +495,13 @@ static int lib_setattr(LibObject *lib, PyObject *name, PyObject *val)
     return -1;
 }
 
-static PyObject *lib_dir(LibObject *lib, PyObject *noarg)
+static PyObject *lib_dir(PyObject *self, PyObject *noarg)
 {
-    const struct _cffi_global_s *g = lib->l_types_builder->ctx.globals;
-    int i, total = lib->l_types_builder->ctx.num_globals;
-    PyObject *lst = PyList_New(total);
-    if (lst == NULL)
-        return NULL;
-
-    for (i = 0; i < total; i++) {
-        PyObject *s = PyText_FromString(g[i].name);
-        if (s == NULL) {
-            Py_DECREF(lst);
-            return NULL;
-        }
-        PyList_SET_ITEM(lst, i, s);
-    }
-    return lst;
+    return _lib_dir1((LibObject *)self, 0);
 }
 
 static PyMethodDef lib_methods[] = {
-    {"__dir__",   (PyCFunction)lib_dir,  METH_NOARGS},
+    {"__dir__",   lib_dir,  METH_NOARGS},
     {NULL,        NULL}           /* sentinel */
 };
 

@@ -13,7 +13,6 @@ static PyTypeObject Lib_Type;   /* forward */
 
 #include "ffi_obj.c"
 #include "cglob.c"
-#include "cgc.c"
 #include "lib_obj.c"
 #include "cdlopen.c"
 
@@ -22,33 +21,38 @@ static int init_ffi_lib(PyObject *m)
 {
     PyObject *x;
     int i;
+    static char init_done = 0;
 
     if (PyType_Ready(&FFI_Type) < 0)
         return -1;
     if (PyType_Ready(&Lib_Type) < 0)
         return -1;
-    if (init_global_types_dict(FFI_Type.tp_dict) < 0)
-        return -1;
 
-    FFIError = PyErr_NewException("ffi.error", NULL, NULL);
-    if (FFIError == NULL)
-        return -1;
-    if (PyDict_SetItemString(FFI_Type.tp_dict, "error", FFIError) < 0)
-        return -1;
-    if (PyDict_SetItemString(FFI_Type.tp_dict, "CType",
-                             (PyObject *)&CTypeDescr_Type) < 0)
-        return -1;
-    if (PyDict_SetItemString(FFI_Type.tp_dict, "CData",
-                             (PyObject *)&CData_Type) < 0)
-        return -1;
-
-    for (i = 0; all_dlopen_flags[i].name != NULL; i++) {
-        x = PyInt_FromLong(all_dlopen_flags[i].value);
-        if (x == NULL || PyDict_SetItemString(FFI_Type.tp_dict,
-                                              all_dlopen_flags[i].name,
-                                              x) < 0)
+    if (!init_done) {
+        if (init_global_types_dict(FFI_Type.tp_dict) < 0)
             return -1;
-        Py_DECREF(x);
+
+        FFIError = PyErr_NewException("ffi.error", NULL, NULL);
+        if (FFIError == NULL)
+            return -1;
+        if (PyDict_SetItemString(FFI_Type.tp_dict, "error", FFIError) < 0)
+            return -1;
+        if (PyDict_SetItemString(FFI_Type.tp_dict, "CType",
+                                 (PyObject *)&CTypeDescr_Type) < 0)
+            return -1;
+        if (PyDict_SetItemString(FFI_Type.tp_dict, "CData",
+                                 (PyObject *)&CData_Type) < 0)
+            return -1;
+
+        for (i = 0; all_dlopen_flags[i].name != NULL; i++) {
+            x = PyInt_FromLong(all_dlopen_flags[i].value);
+            if (x == NULL || PyDict_SetItemString(FFI_Type.tp_dict,
+                                                  all_dlopen_flags[i].name,
+                                                  x) < 0)
+                return -1;
+            Py_DECREF(x);
+        }
+        init_done = 1;
     }
 
     x = (PyObject *)&FFI_Type;
@@ -141,11 +145,11 @@ static PyObject *_my_Py_InitModule(char *module_name)
 
 static PyObject *b_init_cffi_1_0_external_module(PyObject *self, PyObject *arg)
 {
-    PyObject *m;
+    PyObject *m, *modules_dict;
     FFIObject *ffi;
     LibObject *lib;
     Py_ssize_t version;
-    char *module_name, *exports;
+    char *module_name, *exports, *module_name_with_lib;
     void **raw;
     const struct _cffi_type_context_s *ctx;
 
@@ -187,6 +191,18 @@ static PyObject *b_init_cffi_1_0_external_module(PyObject *self, PyObject *arg)
     if (make_included_tuples(module_name, ctx->includes,
                              &ffi->types_builder.included_ffis,
                              &lib->l_types_builder->included_libs) < 0)
+        return NULL;
+
+    /* add manually 'module_name.lib' in sys.modules:
+       see test_import_from_lib */
+    modules_dict = PySys_GetObject("modules");
+    if (!modules_dict)
+        return NULL;
+    module_name_with_lib = alloca(strlen(module_name) + 5);
+    strcpy(module_name_with_lib, module_name);
+    strcat(module_name_with_lib, ".lib");
+    if (PyDict_SetItemString(modules_dict, module_name_with_lib,
+                             (PyObject *)lib) < 0)
         return NULL;
 
     return m;

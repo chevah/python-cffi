@@ -51,23 +51,21 @@ Requirements:
 
 Download and Installation:
 
-* http://pypi.python.org/packages/source/c/cffi/cffi-1.1.1.tar.gz
-
-   - Or grab the most current version by following the instructions below.
+* http://pypi.python.org/packages/source/c/cffi/cffi-1.3.0.tar.gz
 
    - MD5: ...
 
    - SHA: ...
 
-* Or get it from the `Bitbucket page`_:
+* Or grab the most current version from the `Bitbucket page`_:
   ``hg clone https://bitbucket.org/cffi/cffi``
 
 * ``python setup.py install`` or ``python setup_base.py install``
   (should work out of the box on Linux or Windows; see below for
   `MacOS X`_ or `Windows 64`_.)
 
-* running the tests: ``py.test c/ _cffi1/ testing/`` (if you didn't
-  install cffi yet, you may need ``python setup_base.py build_ext -f
+* running the tests: ``py.test  c/  testing/`` (if you didn't
+  install cffi yet, you need first ``python setup_base.py build_ext -f
   -i``)
 
 .. _`Bitbucket page`: https://bitbucket.org/cffi/cffi
@@ -139,6 +137,11 @@ Win32 works and is tested at least each official release.
 
 The recommended C compiler compatible with Python 2.7 is this one:
 http://www.microsoft.com/en-us/download/details.aspx?id=44266
+There is a known problem with distutils on Python 2.7, as 
+explained in https://bugs.python.org/issue23246, and the same 
+problem applies whenever you want to run compile() to build a dll with
+this specific compiler suite download. 
+``import setuptools`` might help, but YMMV
 
 For Python 3.4 and beyond:
 https://www.visualstudio.com/en-us/downloads/visual-studio-2015-ctp-vs
@@ -148,7 +151,8 @@ Windows 64
 ++++++++++
 
 Win64 received very basic testing and we applied a few essential
-fixes in cffi 0.7.  Please report any other issue.
+fixes in cffi 0.7. The comment above applies for Python 2.7 on 
+Windows 64 as well. Please report any other issue.
 
 Note as usual that this is only about running the 64-bit version of
 Python on the 64-bit OS.  If you're running the 32-bit version (the
