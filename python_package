@@ -36,7 +36,7 @@ command_clean() {
 
 help_text_deps="Install the dependencies."
 command_deps() {
-    sudo apt-get install -y libffi-dev
+    echo sudo apt-get install -y libffi-dev
 }
 
 
@@ -77,10 +77,11 @@ command_list_remote() {
 
 help_text_test="Test the newly created package."
 command_test() {
-    $PIP_BIN uninstall cffi
+    $PIP_BIN uninstall -y cffi
     $PIP_BIN install pytest pycparser
     $PIP_BIN install dist/upload/wheels/cffi/*.whl
     $PYTEST_BIN -v
+    return 0
 }
 
 # Launch the whole thing.
