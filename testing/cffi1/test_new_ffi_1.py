@@ -781,8 +781,8 @@ class TestNewFFI1:
         p = ffi.cast("long long", ffi.cast("wchar_t", -1))
         if SIZE_OF_WCHAR == 2:      # 2 bytes, unsigned
             assert int(p) == 0xffff
-        elif platform.machine() == 'aarch64': # 4 bytes, unsigned
-            assert int(p) == 0xffffffff
+        elif platform.machine().startswith(('arm', 'aarch64')):
+            assert int(p) == 0xffffffff      # 4 bytes, unsigned
         else:                       # 4 bytes, signed
             assert int(p) == -1
         p = ffi.cast("int", u+'\u1234')
@@ -1699,3 +1699,21 @@ class TestNewFFI1:
         c_file = str(udir.join('test_emit_c_code'))
         ffi.emit_c_code(c_file)
         assert os.path.isfile(c_file)
+
+    def test_import_from_lib(self):
+        ffi2 = cffi.FFI()
+        ffi2.cdef("int myfunc(int); int myvar;\n#define MYFOO ...\n")
+        outputfilename = recompile(ffi2, "_test_import_from_lib",
+                                   "int myfunc(int x) { return x + 1; }\n"
+                                   "int myvar = -5;\n"
+                                   "#define MYFOO 42", tmpdir=str(udir))
+        imp.load_dynamic("_test_import_from_lib", outputfilename)
+        from _test_import_from_lib.lib import myfunc, myvar, MYFOO
+        assert MYFOO == 42
+        assert myfunc(43) == 44
+        assert myvar == -5     # but can't be changed, so not very useful
+        py.test.raises(ImportError, "from _test_import_from_lib.lib import bar")
+        d = {}
+        exec("from _test_import_from_lib.lib import *", d)
+        assert (set(key for key in d if not key.startswith('_')) ==
+                set(['myfunc', 'MYFOO']))

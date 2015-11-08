@@ -331,7 +331,8 @@ PyDoc_STRVAR(ffi_new_doc,
 "used for a longer time.  Be careful about that when copying the\n"
 "pointer to the memory somewhere else, e.g. into another structure.");
 
-static PyObject *ffi_new(FFIObject *self, PyObject *args, PyObject *kwds)
+static PyObject *_ffi_new(FFIObject *self, PyObject *args, PyObject *kwds,
+                          cffi_allocator_t allocator)
 {
     CTypeDescrObject *ct;
     PyObject *arg, *init = Py_None;
@@ -344,7 +345,71 @@ static PyObject *ffi_new(FFIObject *self, PyObject *args, PyObject *kwds)
     if (ct == NULL)
         return NULL;
 
-    return direct_newp(ct, init);
+    return direct_newp(ct, init, allocator);
+}
+
+static PyObject *ffi_new(FFIObject *self, PyObject *args, PyObject *kwds)
+{
+    return _ffi_new(self, args, kwds, default_allocator);
+}
+
+static PyObject *_ffi_new_with_allocator(PyObject *allocator, PyObject *args,
+                                         PyObject *kwds)
+{
+    return _ffi_new((FFIObject *)PyTuple_GET_ITEM(allocator, 0),
+                    args, kwds,
+                    &PyTuple_GET_ITEM(allocator, 1));
+}
+
+PyDoc_STRVAR(ffi_new_allocator_doc, "XXX");
+
+static PyObject *ffi_new_allocator(FFIObject *self, PyObject *args,
+                                   PyObject *kwds)
+{
+    PyObject *allocator, *result;
+    PyObject *my_alloc = Py_None, *my_free = Py_None;
+    int should_clear_after_alloc = 1;
+    static char *keywords[] = {"alloc", "free", "should_clear_after_alloc",
+                               NULL};
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "|OOi:new_allocator", keywords,
+                                     &my_alloc, &my_free,
+                                     &should_clear_after_alloc))
+        return NULL;
+
+    if (my_alloc == Py_None && my_free != Py_None) {
+        PyErr_SetString(PyExc_TypeError, "cannot pass 'free' without 'alloc'");
+        return NULL;
+    }
+
+    allocator = PyTuple_New(4);
+    if (allocator == NULL)
+        return NULL;
+
+    Py_INCREF(self);
+    PyTuple_SET_ITEM(allocator, 0, (PyObject *)self);
+
+    if (my_alloc != Py_None) {
+        Py_INCREF(my_alloc);
+        PyTuple_SET_ITEM(allocator, 1, my_alloc);
+    }
+    if (my_free != Py_None) {
+        Py_INCREF(my_free);
+        PyTuple_SET_ITEM(allocator, 2, my_free);
+    }
+    if (!should_clear_after_alloc) {
+        PyObject *my_true = Py_True;
+        Py_INCREF(my_true);
+        PyTuple_SET_ITEM(allocator, 3, my_true);  /* dont_clear_after_alloc */
+    }
+
+    {
+        static PyMethodDef md = {"allocator",
+                                 (PyCFunction)_ffi_new_with_allocator,
+                                 METH_VARARGS | METH_KEYWORDS};
+        result = PyCFunction_New(&md, allocator);
+    }
+    Py_DECREF(allocator);
+    return result;
 }
 
 PyDoc_STRVAR(ffi_cast_doc,
@@ -664,21 +729,8 @@ PyDoc_STRVAR(ffi_gc_doc,
 "Later, when this new cdata object is garbage-collected,\n"
 "'destructor(old_cdata_object)' will be called.");
 
-static PyObject *gc_weakrefs_build(FFIObject *ffi, CDataObject *cd,
-                                   PyObject *destructor);   /* forward */
-
-static PyObject *ffi_gc(FFIObject *self, PyObject *args, PyObject *kwds)
-{
-    CDataObject *cd;
-    PyObject *destructor;
-    static char *keywords[] = {"cdata", "destructor", NULL};
-
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O!O:gc", keywords,
-                                     &CData_Type, &cd, &destructor))
-        return NULL;
-
-    return gc_weakrefs_build(self, cd, destructor);
-}
+#define ffi_gc  b_gcp     /* ffi_gc() => b_gcp()
+                             from _cffi_backend.c */
 
 PyDoc_STRVAR(ffi_callback_doc,
 "Return a callback object or a decorator making such a callback object.\n"
@@ -701,11 +753,13 @@ static PyObject *_ffi_callback_decorator(PyObject *outer_args, PyObject *fn)
 static PyObject *ffi_callback(FFIObject *self, PyObject *args, PyObject *kwds)
 {
     PyObject *c_decl, *python_callable = Py_None, *error = Py_None;
-    PyObject *res;
-    static char *keywords[] = {"cdecl", "python_callable", "error", NULL};
+    PyObject *res, *onerror = Py_None;
+    static char *keywords[] = {"cdecl", "python_callable", "error",
+                               "onerror", NULL};
 
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O|OO", keywords,
-                                     &c_decl, &python_callable, &error))
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "O|OOO", keywords,
+                                     &c_decl, &python_callable, &error,
+                                     &onerror))
         return NULL;
 
     c_decl = (PyObject *)_ffi_type(self, c_decl, ACCEPT_STRING | ACCEPT_CTYPE |
@@ -713,7 +767,7 @@ static PyObject *ffi_callback(FFIObject *self, PyObject *args, PyObject *kwds)
     if (c_decl == NULL)
         return NULL;
 
-    args = Py_BuildValue("(OOO)", c_decl, python_callable, error);
+    args = Py_BuildValue("(OOOO)", c_decl, python_callable, error, onerror);
     if (args == NULL)
         return NULL;
 
@@ -798,6 +852,24 @@ static PyObject *ffi_int_const(FFIObject *self, PyObject *args, PyObject *kwds)
     return x;
 }
 
+PyDoc_STRVAR(ffi_memmove_doc,
+"ffi.memmove(dest, src, n) copies n bytes of memory from src to dest.\n"
+"\n"
+"Like the C function memmove(), the memory areas may overlap;\n"
+"apart from that it behaves like the C function memcpy().\n"
+"\n"
+"'src' can be any cdata ptr or array, or any Python buffer object.\n"
+"'dest' can be any cdata ptr or array, or a writable Python buffer\n"
+"object.  The size to copy, 'n', is always measured in bytes.\n"
+"\n"
+"Unlike other methods, this one supports all Python buffer including\n"
+"byte strings and bytearrays---but it still does not support\n"
+"non-contiguous buffers.");
+
+#define ffi_memmove  b_memmove     /* ffi_memmove() => b_memmove()
+                                      from _cffi_backend.c */
+
+
 #define METH_VKW  (METH_VARARGS | METH_KEYWORDS)
 static PyMethodDef ffi_methods[] = {
  {"addressof",  (PyCFunction)ffi_addressof,  METH_VARARGS, ffi_addressof_doc},
@@ -815,7 +887,9 @@ static PyMethodDef ffi_methods[] = {
  {"getwinerror",(PyCFunction)ffi_getwinerror,METH_VKW,     ffi_getwinerror_doc},
 #endif
  {"integer_const",(PyCFunction)ffi_int_const,METH_VKW,     ffi_int_const_doc},
+ {"memmove",    (PyCFunction)ffi_memmove,    METH_VKW,     ffi_memmove_doc},
  {"new",        (PyCFunction)ffi_new,        METH_VKW,     ffi_new_doc},
+{"new_allocator",(PyCFunction)ffi_new_allocator,METH_VKW,ffi_new_allocator_doc},
  {"new_handle", (PyCFunction)ffi_new_handle, METH_O,       ffi_new_handle_doc},
  {"offsetof",   (PyCFunction)ffi_offsetof,   METH_VARARGS, ffi_offsetof_doc},
  {"sizeof",     (PyCFunction)ffi_sizeof,     METH_O,       ffi_sizeof_doc},

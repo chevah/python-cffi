@@ -2,6 +2,8 @@
 Using the ffi/lib objects
 ================================
 
+.. contents::
+
 Keep this page under your pillow.
 
 
@@ -41,12 +43,15 @@ too, as described later.
 
 Example::
 
-    >>> ffi.new("char *")
-    <cdata 'char *' owning 1 bytes>
     >>> ffi.new("int *")
     <cdata 'int *' owning 4 bytes>
     >>> ffi.new("int[10]")
     <cdata 'int[10]' owning 40 bytes>
+
+    >>> ffi.new("char *")          # allocates only one char---not a C string!
+    <cdata 'char *' owning 1 bytes>
+    >>> ffi.new("char[]", "foobar")  # this allocates a C string, ending in \0
+    <cdata 'char[]' owning 7 bytes>
 
 Unlike C, the returned pointer object has *ownership* on the allocated
 memory: when this exact object is garbage-collected, then the memory is
@@ -63,16 +68,18 @@ cannot, be attached to the underlying raw memory.)  Example:
 
     global_weakkeydict = weakref.WeakKeyDictionary()
 
-    s1   = ffi.new("struct foo *")
-    fld1 = ffi.new("struct bar *")
-    fld2 = ffi.new("struct bar *")
-    s1.thefield1 = fld1
-    s1.thefield2 = fld2
-    # here the 'fld1' and 'fld2' object must not go away,
-    # otherwise 's1.thefield1/2' will point to garbage!
-    global_weakkeydict[s1] = (fld1, fld2)
-    # now 's1' keeps alive 'fld1' and 'fld2'.  When 's1' goes
-    # away, then the weak dictionary entry will be removed.
+    def make_foo():
+        s1   = ffi.new("struct foo *")
+        fld1 = ffi.new("struct bar *")
+        fld2 = ffi.new("struct bar *")
+        s1.thefield1 = fld1
+        s1.thefield2 = fld2
+        # here the 'fld1' and 'fld2' object must not go away,
+        # otherwise 's1.thefield1/2' will point to garbage!
+        global_weakkeydict[s1] = (fld1, fld2)
+        # now 's1' keeps alive 'fld1' and 'fld2'.  When 's1' goes
+        # away, then the weak dictionary entry will be removed.
+        return s1
 
 The cdata objects support mostly the same operations as in C: you can
 read or write from pointers, arrays and structures.  Dereferencing a
@@ -198,6 +205,25 @@ initializer says how long the array should be:
     p = ffi.new("foo_t *", [5, 3])         # length 3 with 0 in the array
     p = ffi.new("foo_t *", {'y': 3})       # length 3 with 0 everywhere
 
+Finally, note that any Python object used as initializer can also be
+used directly without ``ffi.new()`` in assignments to array items or
+struct fields.  In fact, ``p = ffi.new("T*", initializer)`` is
+equivalent to ``p = ffi.new("T*"); p[0] = initializer``.  Examples:
+
+.. code-block:: python
+
+    # if 'p' is a <cdata 'int[5][5]'>
+    p[2] = [10, 20]             # writes to p[2][0] and p[2][1]
+
+    # if 'p' is a <cdata 'foo_t *'>, and foo_t has fields x, y and z
+    p[0] = {'x': 10, 'z': 20}   # writes to p.x and p.z; p.y unmodified
+
+    # if, on the other hand, foo_t has a field 'char a[5]':
+    p.a = "abc"                 # writes 'a', 'b', 'c' and '\0'; p.a[4] unmodified
+
+In function calls, when passing arguments, these rules can be used too;
+see `Function calls`_.
+
 
 Python 3 support
 ----------------
@@ -295,14 +321,18 @@ argument and may mutate it!):
 You can also pass unicode strings as ``wchar_t *`` arguments.  Note that
 in general, there is no difference between C argument declarations that
 use ``type *`` or ``type[]``.  For example, ``int *`` is fully
-equivalent to ``int[]`` or ``int[5]``.  So you can pass an ``int *`` as
-a list of integers:
+equivalent to ``int[]`` (or even ``int[5]``; the 5 is ignored).  So you
+can pass an ``int *`` as a list of integers:
 
 .. code-block:: python
 
     # void do_something_with_array(int *array);
 
     lib.do_something_with_array([1, 2, 3, 4, 5])
+
+See `Reference: conversions`_ for a similar way to pass ``struct foo_s
+*`` arguments---but in general, it is clearer to simply pass
+``ffi.new('struct foo_s *', initializer)``.
 
 CFFI supports passing and returning structs to functions and callbacks.
 Example:
@@ -464,11 +494,6 @@ arguments are passed:
         return 0
     lib.python_callback = python_callback
 
-Windows: you can't yet specify the calling convention of callbacks.
-(For regular calls, the correct calling convention should be
-automatically inferred by the C backend.)  Use an indirection, like
-in the example just above.
-
 Be careful when writing the Python callback function: if it returns an
 object of the wrong type, or more generally raises an exception, then
 the exception cannot be propagated.  Instead, it is printed to stderr
@@ -481,13 +506,83 @@ specified with the ``error`` keyword argument to ``ffi.callback()``:
 
     @ffi.callback("int(int, int)", error=-1)
 
-In all cases the exception is printed to stderr, so this should be
+The exception is still printed to stderr, so this should be
 used only as a last-resort solution.
 
 Deprecated: you can also use ``ffi.callback()`` not as a decorator but
 directly as ``ffi.callback("int(int, int)", myfunc)``.  This is
 discouraged: using this a style, we are more likely to forget the
 callback object too early, when it is still in use.
+
+*New in version 1.2:* If you want to be sure to catch all exceptions, use
+``ffi.callback(..., onerror=func)``.  If an exception occurs and
+``onerror`` is specified, then ``onerror(exception, exc_value,
+traceback)`` is called.  This is useful in some situations where
+you cannot simply write ``try: except:`` in the main callback
+function, because it might not catch exceptions raised by signal
+handlers: if a signal occurs while in C, it will be called after
+entering the main callback function but before executing the
+``try:``.
+
+If ``onerror`` returns normally, then it is assumed that it handled
+the exception on its own and nothing is printed to stderr.  If
+``onerror`` raises, then both tracebacks are printed.  Finally,
+``onerror`` can itself provide the result value of the callback in
+C, but doesn't have to: if it simply returns None---or if
+``onerror`` itself fails---then the value of ``error`` will be
+used, if any.
+
+Note the following hack: in ``onerror``, you can access the original
+callback arguments as follows.  First check if ``traceback`` is not
+None (it is None e.g. if the whole function ran successfully but
+there was an error converting the value returned: this occurs after
+the call).  If ``traceback`` is not None, then ``traceback.tb_frame``
+is the frame of the outermost function, i.e. directly the one invoked
+by the callback handler.  So you can get the value of ``argname`` in
+that frame by reading ``traceback.tb_frame.f_locals['argname']``.
+
+
+Windows: calling conventions
+----------------------------
+
+On Win32, functions can have two main calling conventions: either
+"cdecl" (the default), or "stdcall" (also known as "WINAPI").  There
+are also other rare calling conventions, but these are not supported.
+*New in version 1.3.*
+
+When you issue calls from Python to C, the implementation is such that
+it works with any of these two main calling conventions; you don't
+have to specify it.  However, if you manipulate variables of type
+"function pointer" or declare callbacks, then the calling convention
+must be correct.  This is done by writing ``__cdecl`` or ``__stdcall``
+in the type, like in C::
+
+    @ffi.callback("int __stdcall(int, int)")
+    def AddNumbers(x, y):
+        return x + y
+
+or::
+
+    ffi.cdef("""
+        struct foo_s {
+            int (__stdcall *MyFuncPtr)(int, int);
+        };
+    """)
+
+``__cdecl`` is supported but is always the default so it can be left
+out.  In the ``cdef()``, you can also use ``WINAPI`` as equivalent to
+``__stdcall``.  As mentioned above, it is not needed (but doesn't
+hurt) to say ``WINAPI`` or ``__stdcall`` when declaring a plain
+function in the ``cdef()``.
+
+These calling convention specifiers are accepted but ignored on any
+platform other than 32-bit Windows.
+
+In CFFI versions before 1.3, the calling convention specifiers are not
+recognized.  In API mode, you could work around it by using an
+indirection, like in the example in the section about Callbacks_
+(``"example_build.py"``).  There was no way to use stdcall callbacks
+in ABI mode.
 
 
 FFI Interface
@@ -519,18 +614,17 @@ value is casted between integers or pointers of any type.
 confuse it with ``ffi.errno``.)
         
 **ffi.errno**: the value of ``errno`` received from the most recent C call
-in this thread, and passed to the following C call.  (This is a property.)
+in this thread, and passed to the following C call.  (This is a read-write
+property.)
 
 **ffi.getwinerror(code=-1)**: on Windows, in addition to ``errno`` we
 also save and restore the ``GetLastError()`` value across function
 calls.  This function returns this error code as a tuple ``(code,
 message)``, adding a readable message like Python does when raising
 WindowsError.  If the argument ``code`` is given, format that code into
-a message instead of using ``GetLastError()``.  *New in version 0.8.*
+a message instead of using ``GetLastError()``.
 (Note that it is also possible to declare and call the ``GetLastError()``
 function as usual.)
-
-.. "versionadded:: 0.8" --- inlined in the previous paragraph
 
 **ffi.string(cdata, [maxlen])**: return a Python string (or unicode
 string) from the 'cdata'.
@@ -559,11 +653,18 @@ the raw C data pointed to by the given 'cdata', of 'size' bytes.  The
 'cdata' must be a pointer or an array.  If unspecified, the size of the
 buffer is either the size of what ``cdata`` points to, or the whole size
 of the array.  Getting a buffer is useful because you can read from it
-without an extra copy, or write into it to change the original value;
-you can use for example ``file.write()`` and ``file.readinto()`` with
-such a buffer (for files opened in binary mode).  (Remember that like in
-C, you can use ``array + index`` to get the pointer to the index'th item of
-an array.)
+without an extra copy, or write into it to change the original value.
+
+Here are a few examples of where buffer() would be useful:
+
+-  use ``file.write()`` and ``file.readinto()`` with
+   such a buffer (for files opened in binary mode)
+
+-  use ``ffi.buffer(mystruct[0])[:] = socket.recv(len(buffer))`` to read
+   into a struct over a socket, rewriting the contents of mystruct[0]
+
+Remember that like in C, you can use ``array + index`` to get the pointer
+to the index'th item of an array.
 
 The returned object is not a built-in buffer nor memoryview object,
 because these objects' API changes too much across Python versions.
@@ -583,14 +684,10 @@ The buffer object returned by ``ffi.buffer(cdata)`` keeps alive the
 ``cdata`` object: if it was originally an owning cdata, then its
 owned memory will not be freed as long as the buffer is alive.
 
-.. versionchanged:: 0.8.2
-   Before version 0.8.2, ``bytes(buf)`` was supported in Python 3 to get
-   the content of the buffer, but on Python 2 it would return the repr
-   ``<_cffi_backend.buffer object>``.  This has been fixed.  But you
-   should avoid using ``str(buf)``: it gives inconsistent results
-   between Python 2 and Python 3 (this is similar to how ``str()``
-   gives inconsistent results on regular byte strings).  Use ``buf[:]``
-   instead.
+Python 2/3 compatibility note: you should avoid using ``str(buf)``,
+because it gives inconsistent results between Python 2 and Python 3.
+This is similar to how ``str()`` gives inconsistent results on regular
+byte strings).  Use ``buf[:]`` instead.
 
 **ffi.from_buffer(python_buffer)**: return a ``<cdata 'char[]'>`` that
 points to the data of the given Python object, which must support the
@@ -605,7 +702,26 @@ new memoryview API.  The original object is kept alive (and, in case
 of memoryview, locked) as long as the cdata object returned by
 ``ffi.from_buffer()`` is alive.  *New in version 0.9.*
 
-.. "versionadded:: 0.9" --- inlined in the previous paragraph
+
+.. _memmove:
+
+**ffi.memmove(dest, src, n)**: copy ``n`` bytes from memory area
+``src`` to memory area ``dest``.  See examples below.  Inspired by the
+C functions ``memcpy()`` and ``memmove()``---like the latter, the
+areas can overlap.  Each of ``dest`` and ``src`` can be either a cdata
+pointer or a Python object supporting the buffer/memoryview interface.
+In the case of ``dest``, the buffer/memoryview must be writable.
+Unlike ``ffi.from_buffer()``, there are no restrictions on the type of
+buffer.  *New in version 1.3.*  Examples:
+
+* ``ffi.memmove(myptr, b"hello", 5)`` copies the 5 bytes of
+  ``b"hello"`` to the area that ``myptr`` points to.
+
+* ``ba = bytearray(100); ffi.memmove(ba, myptr, 100)`` copies 100
+  bytes from ``myptr`` into the bytearray ``ba``.
+
+* ``ffi.memmove(myptr + 1, myptr, 100)`` shifts 100 bytes from
+  the memory at ``myptr`` to the memory at ``myptr + 1``.
 
 
 **ffi.typeof("C type" or cdata object)**: return an object of type
@@ -657,13 +773,13 @@ the argument.  Corresponds to the ``__alignof__`` operator in GCC.
 offset within the struct of the given field.  Corresponds to ``offsetof()``
 in C.
 
-.. versionchanged:: 0.9
-   You can give several field names in case of nested structures.  You
-   can also give numeric values which correspond to array items, in case
-   of a pointer or array type.  For example, ``ffi.offsetof("int[5]", 2)``
-   is equal to the size of two integers, as is ``ffi.offsetof("int *", 2)``.
+*New in version 0.9:*
+You can give several field names in case of nested structures.  You
+can also give numeric values which correspond to array items, in case
+of a pointer or array type.  For example, ``ffi.offsetof("int[5]", 2)``
+is equal to the size of two integers, as is ``ffi.offsetof("int *", 2)``.
 
-   
+
 **ffi.getctype("C type" or <ctype>, extra="")**: return the string
 representation of the given C type.  If non-empty, the "extra" string is
 appended (or inserted at the right place in more complicated cases); it
@@ -766,6 +882,26 @@ by ``ffi.dlopen()``.
 
 **ffi.RLTD_...**: constants: flags for ``ffi.dlopen()``.
 
+
+.. _`alternative allocators`:
+
+**ffi.new_allocator(alloc=None, free=None, should_clear_after_alloc=True)**:
+returns a new allocator.  An "allocator" is a callable that behaves like
+``ffi.new()`` but uses the provided low-level ``alloc`` and ``free``
+functions.  *New in version 1.2.*
+
+``alloc()`` is invoked with the size as sole argument.  If it returns
+NULL, a MemoryError is raised.  Later, if ``free`` is not None, it will
+be called with the result of ``alloc()`` as argument.  Both can be either
+Python function or directly C functions.  If only ``free`` is None, then no
+free function is called.  If both ``alloc`` and ``free`` are None, the
+default alloc/free combination is used.  (In other words, the call
+``ffi.new(*args)`` is equivalent to ``ffi.new_allocator()(*args)``.)
+
+If ``should_clear_after_alloc`` is set to False, then the memory
+returned by ``alloc()`` is assumed to be already cleared (or you are
+fine with garbage); otherwise CFFI will clear it.
+
 .. _`Preparing and Distributing modules`: cdef.html#loading-libraries
 
 
@@ -860,6 +996,8 @@ allowed.
    function with a ``char *`` argument to which you pass a Python
    string will not actually modify the array of characters passed in,
    and so passes directly a pointer inside the Python string object.
+   (PyPy might in the future do the same, but it is harder because a
+   string object can move in memory when the GC runs.)
 
 `(**)` C function calls are done with the GIL released.
 

@@ -29,6 +29,32 @@ def test_ffi_cache_type():
     assert ffi.typeof("int[][10]") is ffi.typeof("int[][10]")
     assert ffi.typeof("int(*)()") is ffi.typeof("int(*)()")
 
+def test_ffi_type_not_immortal():
+    import weakref, gc
+    ffi = _cffi1_backend.FFI()
+    t1 = ffi.typeof("int **")
+    t2 = ffi.typeof("int *")
+    w1 = weakref.ref(t1)
+    w2 = weakref.ref(t2)
+    del t1, ffi
+    gc.collect()
+    assert w1() is None
+    assert w2() is t2
+    ffi = _cffi1_backend.FFI()
+    assert ffi.typeof(ffi.new("int **")[0]) is t2
+    #
+    ffi = _cffi1_backend.FFI()
+    t1 = ffi.typeof("int ***")
+    t2 = ffi.typeof("int **")
+    w1 = weakref.ref(t1)
+    w2 = weakref.ref(t2)
+    del t2, ffi
+    gc.collect()
+    assert w1() is t1
+    assert w2() is not None   # kept alive by t1
+    ffi = _cffi1_backend.FFI()
+    assert ffi.typeof("int * *") is t1.item
+
 def test_ffi_cache_type_globally():
     ffi1 = _cffi1_backend.FFI()
     ffi2 = _cffi1_backend.FFI()
@@ -103,6 +129,35 @@ def test_ffi_callback_decorator():
     deco = ffi.callback("int(int)", error=-66)
     assert deco(lambda x: x + "")(10) == -66
     assert deco(lambda x: x + 42)(10) == 52
+
+def test_ffi_callback_onerror():
+    ffi = _cffi1_backend.FFI()
+    seen = []
+    def oops(*args):
+        seen.append(args)
+
+    @ffi.callback("int(int)", onerror=oops)
+    def fn1(x):
+        return x + ""
+    assert fn1(10) == 0
+
+    @ffi.callback("int(int)", onerror=oops, error=-66)
+    def fn2(x):
+        return x + ""
+    assert fn2(10) == -66
+
+    assert len(seen) == 2
+    exc, val, tb = seen[0]
+    assert exc is TypeError
+    assert isinstance(val, TypeError)
+    assert tb.tb_frame.f_code.co_name == "fn1"
+    exc, val, tb = seen[1]
+    assert exc is TypeError
+    assert isinstance(val, TypeError)
+    assert tb.tb_frame.f_code.co_name == "fn2"
+    #
+    py.test.raises(TypeError, ffi.callback, "int(int)",
+                   lambda x: x, onerror=42)   # <- not callable
 
 def test_ffi_getctype():
     ffi = _cffi1_backend.FFI()
@@ -181,6 +236,59 @@ def test_ffi_from_buffer():
     ffi.cast("unsigned short *", c)[1] += 500
     assert list(a) == [10000, 20500, 30000]
 
+def test_memmove():
+    ffi = _cffi1_backend.FFI()
+    p = ffi.new("short[]", [-1234, -2345, -3456, -4567, -5678])
+    ffi.memmove(p, p + 1, 4)
+    assert list(p) == [-2345, -3456, -3456, -4567, -5678]
+    p[2] = 999
+    ffi.memmove(p + 2, p, 6)
+    assert list(p) == [-2345, -3456, -2345, -3456, 999]
+    ffi.memmove(p + 4, ffi.new("char[]", b"\x71\x72"), 2)
+    if sys.byteorder == 'little':
+        assert list(p) == [-2345, -3456, -2345, -3456, 0x7271]
+    else:
+        assert list(p) == [-2345, -3456, -2345, -3456, 0x7172]
+
+def test_memmove_buffer():
+    import array
+    ffi = _cffi1_backend.FFI()
+    a = array.array('H', [10000, 20000, 30000])
+    p = ffi.new("short[]", 5)
+    ffi.memmove(p, a, 6)
+    assert list(p) == [10000, 20000, 30000, 0, 0]
+    ffi.memmove(p + 1, a, 6)
+    assert list(p) == [10000, 10000, 20000, 30000, 0]
+    b = array.array('h', [-1000, -2000, -3000])
+    ffi.memmove(b, a, 4)
+    assert b.tolist() == [10000, 20000, -3000]
+    assert a.tolist() == [10000, 20000, 30000]
+    p[0] = 999
+    p[1] = 998
+    p[2] = 997
+    p[3] = 996
+    p[4] = 995
+    ffi.memmove(b, p, 2)
+    assert b.tolist() == [999, 20000, -3000]
+    ffi.memmove(b, p + 2, 4)
+    assert b.tolist() == [997, 996, -3000]
+    p[2] = -p[2]
+    p[3] = -p[3]
+    ffi.memmove(b, p + 2, 6)
+    assert b.tolist() == [-997, -996, 995]
+
+def test_memmove_readonly_readwrite():
+    ffi = _cffi1_backend.FFI()
+    p = ffi.new("signed char[]", 5)
+    ffi.memmove(p, b"abcde", 3)
+    assert list(p) == [ord("a"), ord("b"), ord("c"), 0, 0]
+    ffi.memmove(p, bytearray(b"ABCDE"), 2)
+    assert list(p) == [ord("A"), ord("B"), ord("c"), 0, 0]
+    py.test.raises((TypeError, BufferError), ffi.memmove, b"abcde", p, 3)
+    ba = bytearray(b"xxxxx")
+    ffi.memmove(dest=ba, src=p, n=3)
+    assert ba == bytearray(b"ABcxx")
+
 def test_ffi_types():
     CData = _cffi1_backend.FFI.CData
     CType = _cffi1_backend.FFI.CType
@@ -195,3 +303,95 @@ def test_ffi_getwinerror():
     n = (1 << 29) + 42
     code, message = ffi.getwinerror(code=n)
     assert code == n
+
+def test_ffi_new_allocator_1():
+    ffi = _cffi1_backend.FFI()
+    alloc1 = ffi.new_allocator()
+    alloc2 = ffi.new_allocator(should_clear_after_alloc=False)
+    for retry in range(100):
+        p1 = alloc1("int[10]")
+        p2 = alloc2("int[10]")
+        combination = 0
+        for i in range(10):
+            assert p1[i] == 0
+            combination |= p2[i]
+            p1[i] = -42
+            p2[i] = -43
+        if combination != 0:
+            break
+        del p1, p2
+        import gc; gc.collect()
+    else:
+        raise AssertionError("cannot seem to get an int[10] not "
+                             "completely cleared")
+
+def test_ffi_new_allocator_2():
+    ffi = _cffi1_backend.FFI()
+    seen = []
+    def myalloc(size):
+        seen.append(size)
+        return ffi.new("char[]", b"X" * size)
+    def myfree(raw):
+        seen.append(raw)
+    alloc1 = ffi.new_allocator(myalloc, myfree)
+    alloc2 = ffi.new_allocator(alloc=myalloc, free=myfree,
+                               should_clear_after_alloc=False)
+    p1 = alloc1("int[10]")
+    p2 = alloc2("int[]", 10)
+    assert seen == [40, 40]
+    assert ffi.typeof(p1) == ffi.typeof("int[10]")
+    assert ffi.sizeof(p1) == 40
+    assert ffi.typeof(p2) == ffi.typeof("int[]")
+    assert ffi.sizeof(p2) == 40
+    assert p1[5] == 0
+    assert p2[6] == ord('X') * 0x01010101
+    raw1 = ffi.cast("char *", p1)
+    raw2 = ffi.cast("char *", p2)
+    del p1, p2
+    retries = 0
+    while len(seen) != 4:
+        retries += 1
+        assert retries <= 5
+        import gc; gc.collect()
+    assert seen == [40, 40, raw1, raw2]
+    assert repr(seen[2]) == "<cdata 'char[]' owning 41 bytes>"
+    assert repr(seen[3]) == "<cdata 'char[]' owning 41 bytes>"
+
+def test_ffi_new_allocator_3():
+    ffi = _cffi1_backend.FFI()
+    seen = []
+    def myalloc(size):
+        seen.append(size)
+        return ffi.new("char[]", b"X" * size)
+    alloc1 = ffi.new_allocator(myalloc)    # no 'free'
+    p1 = alloc1("int[10]")
+    assert seen == [40]
+    assert ffi.typeof(p1) == ffi.typeof("int[10]")
+    assert ffi.sizeof(p1) == 40
+    assert p1[5] == 0
+
+def test_ffi_new_allocator_4():
+    ffi = _cffi1_backend.FFI()
+    py.test.raises(TypeError, ffi.new_allocator, free=lambda x: None)
+    #
+    def myalloc2(size):
+        raise LookupError
+    alloc2 = ffi.new_allocator(myalloc2)
+    py.test.raises(LookupError, alloc2, "int[5]")
+    #
+    def myalloc3(size):
+        return 42
+    alloc3 = ffi.new_allocator(myalloc3)
+    e = py.test.raises(TypeError, alloc3, "int[5]")
+    assert str(e.value) == "alloc() must return a cdata object (got int)"
+    #
+    def myalloc4(size):
+        return ffi.cast("int", 42)
+    alloc4 = ffi.new_allocator(myalloc4)
+    e = py.test.raises(TypeError, alloc4, "int[5]")
+    assert str(e.value) == "alloc() must return a cdata pointer, not 'int'"
+    #
+    def myalloc5(size):
+        return ffi.NULL
+    alloc5 = ffi.new_allocator(myalloc5)
+    py.test.raises(MemoryError, alloc5, "int[5]")
