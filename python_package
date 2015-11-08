@@ -6,8 +6,14 @@
 BUILD_FOLDER=build
 DIST_FOLDER=dist
 PYTHON_FOLDER=~/.local/python2.7
+PYTHON_SCRIPTS=$PYTHON_FOLDER/bin
 PYTHON_BIN=$PYTHON_FOLDER/bin/python
-PIP_BIN=$PYTHON_FOLDER/bin/pip
+PIP_BIN=$PYTHON_SCRIPTS/pip
+PYTEST_BIN=$PYTHON_SCRIPTS/py.test
+TRY_BIN="$PYTHON_FOLDER/bin/buildbot try \
+    --connect=pb --master=build.chevah.com:10087 \
+    --username=chevah_buildbot --passwd=chevah_password \
+    --vc git"
 
 # Import shared code.
 . ./functions.sh
@@ -15,6 +21,7 @@ PIP_BIN=$PYTHON_FOLDER/bin/pip
 
 help_text_clean="Clean the folder."
 command_clean() {
+    rm -rf $PYTHON_FOLDER
     if [ -e ${BUILD_FOLDER} ]; then
         echo 'Previous build sub-directory found. Removing...'
         rm -rf ${BUILD_FOLDER}
@@ -27,20 +34,53 @@ command_clean() {
 }
 
 
+help_text_deps="Install the dependencies."
+command_deps() {
+    sudo apt-get install -y libffi-dev
+}
+
+
 help_text_build="Build the binary package."
 command_build() {
     rm -rf ${DIST_FOLDER}
+    mkdir -p ~/.local/
     ./paver.sh distributable_python $PYTHON_FOLDER
-    $PIP_BIN install wheel
+    $PIP_BIN install \
+        --index-url http://chevah.com/pypi/simple/ \
+        --trusted-host chevah.com \
+        twisted
+    $PIP_BIN install wheel buildbot
+
+    $PIP_BIN install \
+        --index-url http://chevah.com/pypi/simple/ \
+        --trusted-host chevah.com \
+        buildbot==0.8.11.pre.143.gac88f1b.c2
+
     $PYTHON_BIN setup.py bdist_wheel
     mkdir -p dist/upload/wheels/cffi/
     mv dist/*.whl dist/upload/wheels/cffi/
 }
 
 
+help_text_test_remote="Trigger a remote builder. --wait is optional."
+command_test_remote() {
+    arch=$1
+    $TRY_BIN --builder python-cffi-$1 $2
+}
+
+help_text_list_remote="List available remote builder."
+command_list_remote() {
+    arch=$1
+    $TRY_BIN --get-builder-names | grep python-cffi
+}
+
+
 help_text_test="Test the newly created package."
 command_test() {
-    echo "No TEST yet"
+    $PIP_BIN uninstall cffi
+    $PIP_BIN install pytest pycparser
+    $PIP_BIN install dist/upload/wheels/cffi/*.whl
+    $PYTEST_BIN -v
 }
 
 # Launch the whole thing.
