@@ -42,7 +42,6 @@ command_deps() {
 
 help_text_build="Build the binary package."
 command_build() {
-    rm -rf ${DIST_FOLDER}
     mkdir -p ~/.local/
     ./paver.sh distributable_python $PYTHON_FOLDER
     $PIP_BIN install \

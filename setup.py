@@ -4,13 +4,13 @@ import errno
 
 
 sources = ['c/_cffi_backend.c']
-libraries = ['ffi']
+libraries = []
 include_dirs = ['/usr/include/ffi',
                 '/usr/include/libffi']    # may be changed by pkg-config
 define_macros = []
 library_dirs = []
 extra_compile_args = []
-extra_link_args = []
+extra_link_args = ['/usr/lib/x86_64-linux-gnu/libffi.so']
 
 
 def _ask_pkg_config(resultlist, option, result_prefix='', sysroot=False):
@@ -73,8 +73,8 @@ def use_pkg_config():
     _ask_pkg_config(include_dirs,       '--cflags-only-I', '-I', sysroot=True)
     _ask_pkg_config(extra_compile_args, '--cflags-only-other')
     _ask_pkg_config(library_dirs,       '--libs-only-L', '-L', sysroot=True)
-    _ask_pkg_config(extra_link_args,    '--libs-only-other')
-    _ask_pkg_config(libraries,          '--libs-only-l', '-l')
+    #_ask_pkg_config(extra_link_args,    '--libs-only-other')
+    #_ask_pkg_config(libraries,          '--libs-only-l', '-l')
 
 def use_homebrew_for_libffi():
     # We can build by setting:
